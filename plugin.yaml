@@ -1,0 +1,10 @@
+name: budget-leash
+version: "0.1.0"
+description: "Hard budget enforcement for Hermes sessions. Tracks estimated model spend (token usage x per-model prices) and tool-call counts against a per-session cap and a persistent per-day cap, and blocks tool calls with pre_tool_call once a cap is exhausted — fail-closed, so unattended cron agents cannot run up unbounded cost. Warns the model at 80% of a cap via context injection, keeps a day-ledger on disk that survives restarts, and writes a per-session JSONL spend report. Born from a public incident where an unattended agent hit 7 unapproved Stripe endpoints and double-charged in 11 minutes."
+author: "jusst"
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - post_api_request
+  - on_session_end
