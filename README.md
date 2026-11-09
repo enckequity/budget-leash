@@ -2,7 +2,8 @@
 
 **Most agent "budgets" are dashboards — they tell you what you spent after
 the money is gone.** The Leash enforces *before* dispatch: when the cap is
-reached, the tool call does not run.
+reached, the tool call does not run — and the next model call doesn't
+happen either.
 
 The scenario it exists for is not hypothetical: an unattended agent once
 hit **7 unapproved Stripe endpoints and double-charged a customer within
@@ -15,7 +16,7 @@ Two meters, each tracked per session **and** per UTC day:
 
 | Meter | Source | Notes |
 | --- | --- | --- |
-| Estimated model spend (USD) | `post_api_request` token usage × per-model price table | Prices configurable per model; a default price covers unlisted models |
+| Estimated model spend (USD) | `post_api_request` token usage × per-model price table | Prices configurable per model; a default price covers unlisted models. Cache read/write tokens are priced too (Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`, OpenAI `prompt_tokens_details.cached_tokens`, Gemini `cached_content_token_count`); set `cache_read` / `cache_write` per model, otherwise each defaults to that model's input price |
 | Tool calls | `post_tool_call` (blocked calls are not metered) | Optional flat per-tool USD costs for tools that bill outside the model (paid APIs, device rentals) |
 
 Enforcement points:
@@ -23,11 +24,24 @@ Enforcement points:
 - `pre_tool_call` returns a **block** when the session cap, the daily cap,
   either tool-call cap is exhausted — or when a flat-cost tool call would
   itself push the session over its cap.
+- The **`llm_execution` middleware** closes the remaining gap: blocking
+  tool calls alone still let a capped session burn spend on tool-free
+  reasoning turns. Once any cap is exhausted, the middleware answers the
+  agent loop with a synthetic provider-shaped "budget exhausted" reply
+  and the provider call is **never made** — enforcement covers the model
+  itself, not just its tools. On OpenAI-compatible and Anthropic API
+  modes the reply is a real SDK response object and the session ends
+  with that explanation; on stricter modes a rejected synthetic reply
+  just retries into the same cut-off, so the cap holds either way. Cut-off
+  calls are counted per session (`blocked_api_calls` in the report).
 - `pre_llm_call` injects a **one-time warning at 80%** of a cap, so the
   model can wrap up instead of being cut off mid-task.
 - The **daily ledger persists on disk** (`~/.hermes/budget-leash-ledger.json`),
   so restarts and parallel processes share one ceiling — a cron fleet
-  can't multiply the budget by respawning.
+  can't multiply the budget by respawning. Every ledger read and write
+  happens under an exclusive file lock (`flock` on
+  `budget-leash-ledger.json.lock`) and re-reads the file first, so the CLI
+  and the gateway can no longer overwrite each other's totals.
 - `on_session_end` appends a spend report to
   `~/.hermes/budget-leash-reports.jsonl`. `/leash` shows live status;
   `/leash report` prints the last session's numbers.
@@ -47,6 +61,16 @@ Defaults: session cap $2.00, daily cap $10.00, 200 tool calls/session,
   "daily_cap_usd": 25.00,
   "prices": {"gemini-3.5-flash-lite": {"input": 0.10, "output": 0.40}},
   "tool_costs": {"rent_device": 1.50}
+}
+```
+
+Cache pricing, per model (defaults to the model's input price when omitted —
+a conservative over-estimate, not a silent under-count):
+
+```json
+{
+  "prices": {"claude-sonnet-4-5": {"input": 3.00, "output": 15.00,
+                                   "cache_read": 0.30, "cache_write": 3.75}}
 }
 ```
 
@@ -73,4 +97,9 @@ Drop this directory into `~/.hermes/plugins/budget-leash/`, enable it
 
 `python3 tests/test_leash.py` — spend accumulation, session/daily cap
 blocking, ledger persistence across processes, tool-call caps, flat tool
-costs, and the one-time 80% warning.
+costs, the one-time 80% warning, cache-token pricing (configured rates,
+input-price default, nested OpenAI details), the ledger race
+(interleaved processes sum instead of clobbering, stale readers refresh
+before deciding, two real processes racing the ledger), and the
+`llm_execution` cut-off (pass-through under the cap, provider never
+invoked over it, synthetic reply shape).
