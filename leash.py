@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 import time
 import types
@@ -71,7 +72,26 @@ _ENV_MAP = {
 
 
 def hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception:
+        return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+
+
+def data_dir() -> Path:
+    """Per-profile plugin data folder (reviewer recommendation): the ledger
+    and the session reports live here instead of the Hermes home root, so in
+    a multi-profile process each profile gets its own ledger."""
+    return hermes_home() / "plugin-data" / "budget-leash"
+
+
+def ledger_path() -> Path:
+    return data_dir() / "ledger.json"
+
+
+def reports_path() -> Path:
+    return data_dir() / "reports.jsonl"
 
 
 def _today() -> str:
@@ -125,13 +145,30 @@ class Ledger:
     """
 
     def __init__(self, path: Optional[Path] = None) -> None:
-        self.path = path or (hermes_home() / "budget-leash-ledger.json")
+        self.path = path or ledger_path()
+        if path is None:
+            self._migrate_legacy_ledger()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self.lock_path = self.path.with_name(self.path.name + ".lock")
         self.day = _today()
         self.spent_usd = 0.0
         self.tool_calls = 0
         self.api_calls = 0
         self._load()
+
+    def _migrate_legacy_ledger(self) -> None:
+        """One-time copy of the pre-0.1.2 ledger from the Hermes home root,
+        so moving the file never resets a day's totals."""
+        try:
+            legacy = hermes_home() / "budget-leash-ledger.json"
+            if legacy.exists() and not self.path.exists():
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(legacy, self.path)
+        except Exception:
+            pass
 
     # -- file access (caller must hold the lock, except _load) ---------------
 
@@ -616,7 +653,8 @@ def write_report(report: dict[str, Any]) -> None:
     if not report:
         return
     try:
-        path = hermes_home() / "budget-leash-reports.jsonl"
+        path = reports_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(report, default=str) + "\n")
     except Exception:

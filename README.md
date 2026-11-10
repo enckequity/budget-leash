@@ -5,10 +5,14 @@ the money is gone.** The Leash enforces *before* dispatch: when the cap is
 reached, the tool call does not run — and the next model call doesn't
 happen either.
 
-The scenario it exists for is not hypothetical: an unattended agent once
-hit **7 unapproved Stripe endpoints and double-charged a customer within
-11 minutes**. The fix at the time was an external wrapper. The Leash is
-that fix as a first-class plugin, on Hermes' own hook surface.
+The scenario it exists for is everyday: unattended agents — cron fleets,
+overnight loops, always-on gateways — spend money while nobody is
+watching, and a dashboard only tells you afterwards. What the Leash caps
+is exactly what it can see: **estimated model spend** (token usage priced
+per model) and **tool-call counts**. A tool that bills outside the model
+is never priced or gated on a guess — it only counts when you list it
+yourself under `tool_costs` with the price you choose. The Leash is that
+enforcement as a first-class plugin, on Hermes' own hook surface.
 
 ## How it works
 
@@ -36,14 +40,17 @@ Enforcement points:
   calls are counted per session (`blocked_api_calls` in the report).
 - `pre_llm_call` injects a **one-time warning at 80%** of a cap, so the
   model can wrap up instead of being cut off mid-task.
-- The **daily ledger persists on disk** (`~/.hermes/budget-leash-ledger.json`),
-  so restarts and parallel processes share one ceiling — a cron fleet
-  can't multiply the budget by respawning. Every ledger read and write
-  happens under an exclusive file lock (`flock` on
-  `budget-leash-ledger.json.lock`) and re-reads the file first, so the CLI
-  and the gateway can no longer overwrite each other's totals.
+- The **daily ledger persists on disk**
+  (`~/.hermes/plugin-data/budget-leash/ledger.json`, one per Hermes
+  profile), so restarts and parallel processes share one ceiling — a cron
+  fleet can't multiply the budget by respawning. Every ledger read and
+  write happens under an exclusive file lock (`flock` on
+  `ledger.json.lock`) and re-reads the file first, so the CLI
+  and the gateway can no longer overwrite each other's totals. A ledger
+  left by an older version in the Hermes home root is migrated on first
+  load, so a day's totals never reset on upgrade.
 - `on_session_end` appends a spend report to
-  `~/.hermes/budget-leash-reports.jsonl`. `/leash` shows live status;
+  `~/.hermes/plugin-data/budget-leash/reports.jsonl`. `/leash` shows live status;
   `/leash report` prints the last session's numbers.
 
 A blocked agent can still write its final answer — plain replies are not

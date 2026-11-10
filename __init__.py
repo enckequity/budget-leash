@@ -96,7 +96,7 @@ def _handle_command(raw_args: str) -> str:
         if argv and argv[0] == "report":
             import json
 
-            path = _engine.hermes_home() / "budget-leash-reports.jsonl"
+            path = _engine.reports_path()
             try:
                 lines = path.read_text(encoding="utf-8").strip().splitlines()
                 return "Last budget-leash report:\n" + json.dumps(
