@@ -63,6 +63,107 @@ DEFAULTS: dict[str, Any] = {
     "disabled": False,
 }
 
+# List prices, USD per 1M tokens, standard tier, as of 2026-11-24. Sources: Anthropic API
+# pricing (cache write = 5-minute write, 1.25x input) and OpenAI API pricing (short context,
+# <=272K input; OpenAI does not charge for cache writes). Used when ``prices`` in
+# budget-leash.json has no entry for the model; an explicit entry there always wins.
+PRICES_AS_OF = "2026-11-24"
+
+
+def _anthropic(pin: float, pout: float, pread: Optional[float] = None) -> dict[str, float]:
+    return {"input": pin, "output": pout,
+            "cache_read": pread if pread is not None else round(pin * 0.1, 4),
+            "cache_write": round(pin * 1.25, 4)}
+
+
+def _openai(pin: float, pout: float, pread: Optional[float] = None) -> dict[str, float]:
+    return {"input": pin, "output": pout,
+            "cache_read": pread if pread is not None else pin, "cache_write": pin}
+
+
+BUILTIN_PRICES: dict[str, dict[str, float]] = {
+    # Anthropic
+    "claude-fable-5-2": _anthropic(8.00, 40.00, 0.20),
+    "claude-mythos-5-2": _anthropic(8.00, 40.00, 0.20),
+    "claude-fable-5-1": _anthropic(10.00, 50.00),
+    "claude-mythos-5-1": _anthropic(10.00, 50.00),
+    "claude-fable-5": _anthropic(10.00, 50.00),
+    "claude-opus-5-5": _anthropic(4.00, 20.00, 0.20),
+    "claude-opus-5": _anthropic(5.00, 25.00),
+    "claude-opus-4-8": _anthropic(5.00, 25.00),
+    "claude-opus-4-7": _anthropic(5.00, 25.00),
+    "claude-opus-4-6": _anthropic(5.00, 25.00),
+    "claude-sonnet-5-5": _anthropic(2.00, 10.00, 0.10),
+    "claude-sonnet-5": _anthropic(2.00, 10.00),
+    "claude-sonnet-4-6": _anthropic(3.00, 15.00),
+    "claude-haiku-5-5": _anthropic(0.10, 0.50),  # prompts up to 100K tokens
+    "claude-haiku-4-5": _anthropic(1.00, 5.00),
+    # OpenAI
+    "gpt-6.2-astra": _openai(8.00, 40.00, 0.40),
+    "gpt-6.2-sol": _openai(2.00, 10.00, 0.10),
+    "gpt-6-astra": _openai(10.00, 50.00, 1.00),
+    "gpt-6.1-sol": _openai(2.00, 10.00, 0.10),
+    "gpt-6.1-terra": _openai(1.00, 5.00, 0.05),
+    "gpt-6-luna": _openai(0.10, 0.50, 0.01),
+    "gpt-6-sol": _openai(2.00, 10.00, 0.20),
+    "gpt-5.6-sol": _openai(4.00, 20.00, 0.40),
+    "gpt-5.6-terra": _openai(2.00, 12.00, 0.20),
+    "gpt-5.6-luna": _openai(0.20, 1.20, 0.02),
+    "gpt-5.5": _openai(5.00, 30.00, 0.50),
+    "gpt-5.5-pro": _openai(30.00, 180.00),
+    "gpt-5.4": _openai(2.50, 15.00, 0.25),
+    "gpt-5.4-pro": _openai(30.00, 180.00),
+    "gpt-5.4-mini": _openai(0.75, 4.50, 0.075),
+    "gpt-5.4-nano": _openai(0.20, 1.25, 0.02),
+    "gpt-5.3-codex": _openai(1.75, 14.00, 0.175),
+    "gpt-5.2": _openai(1.75, 14.00, 0.175),
+    "gpt-5.2-pro": _openai(21.00, 168.00),
+    "gpt-5.1": _openai(1.25, 10.00, 0.125),
+    "gpt-5": _openai(1.25, 10.00, 0.125),
+    "gpt-5-mini": _openai(0.25, 2.00, 0.025),
+    "gpt-5-nano": _openai(0.05, 0.40, 0.005),
+    "gpt-5-pro": _openai(15.00, 120.00),
+    "gpt-4.1": _openai(2.00, 8.00, 0.50),
+    "gpt-4.1-mini": _openai(0.40, 1.60, 0.10),
+    "gpt-4o": _openai(2.50, 10.00, 1.25),
+    "gpt-4o-mini": _openai(0.15, 0.60, 0.075),
+    "o3": _openai(2.00, 8.00, 0.50),
+    "o3-pro": _openai(20.00, 80.00),
+}
+
+# Bare family aliases some providers pass as the model name.
+_ALIASES = {
+    "opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5", "fable": "claude-fable-5-2",
+}
+
+
+def builtin_price(model: Optional[str]) -> Optional[dict[str, float]]:
+    """The built-in list price for a model name as providers spell it, or None.
+
+    Accepts a provider prefix (``anthropic/claude-sonnet-5.5``), dots or dashes in Claude
+    version numbers, a trailing date snapshot (``-20260401``) and the bare family aliases.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return None
+    name = name.rsplit("/", 1)[-1].split(":", 1)[0]
+    name = _ALIASES.get(name, name)
+    if name.startswith("claude-"):
+        name = name.replace(".", "-")
+    parts = name.split("-")
+    if len(parts) > 1 and parts[-1].isdigit() and len(parts[-1]) == 8:
+        name = "-".join(parts[:-1])
+    entry = BUILTIN_PRICES.get(name)
+    if entry is None and name.startswith("claude-"):
+        # claude-sonnet-5-5-latest and similar: longest known prefix.
+        for key in sorted(BUILTIN_PRICES, key=len, reverse=True):
+            if key.startswith("claude-") and name.startswith(key + "-"):
+                entry = BUILTIN_PRICES[key]
+                break
+    return dict(entry) if entry else None
+
+
 _ENV_MAP = {
     "LEASH_SESSION_CAP_USD": ("session_cap_usd", float),
     "LEASH_DAILY_CAP_USD": ("daily_cap_usd", float),
@@ -373,7 +474,7 @@ class Leash:
         rates (e.g. Anthropic cache read ~10% of input) for exactness.
         """
         prices = self.config.get("prices", {})
-        entry = prices.get(model or "") or self.config["default_price"]
+        entry = prices.get(model or "") or builtin_price(model) or self.config["default_price"]
         default = self.config["default_price"]
         pin = float(entry.get("input", 0.0))
         pout = float(entry.get("output", 0.0))
@@ -471,7 +572,7 @@ class Leash:
                     "action": "block",
                     "message": (f"[BUDGET LEASH] Tool call blocked: {reason}. "
                                 "Stop calling tools and write your final answer explaining the budget stop. "
-                                "The user can raise the caps in ~/.hermes/budget-leash.json."),
+                                "The workspace owner can raise the budget caps."),
                 }
             return None
 
@@ -576,9 +677,9 @@ class Leash:
 
 
 def budget_stop_text(reason: str) -> str:
-    return (f"[BUDGET LEASH] Budget exhausted: {reason}. The session was stopped "
-            "before this model call reached the provider, so no further spend was "
-            "incurred. The user can raise the caps in ~/.hermes/budget-leash.json.")
+    return (f"Budget limit reached: {reason}. I stopped before doing any more work, "
+            "so nothing further was spent. The workspace owner can raise the budget "
+            "caps.")
 
 
 def budget_stop_response(model: Optional[str], reason: str, api_mode: Optional[str] = None) -> Any:

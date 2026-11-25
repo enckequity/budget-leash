@@ -71,6 +71,11 @@ Defaults: session cap $2.00, daily cap $10.00, 200 tool calls/session,
 }
 ```
 
+A built-in list-price table (`BUILTIN_PRICES` in `leash.py`, Anthropic and
+OpenAI standard tier as of 2026-11-24) prices the common models, including
+provider-prefixed and dotted spellings; a `prices` entry always overrides it,
+and `default_price` covers anything else.
+
 Cache pricing, per model (defaults to the model's input price when omitted —
 a conservative over-estimate, not a silent under-count):
 

@@ -221,15 +221,55 @@ def test_budget_stop_response_shape():
     resp = budget_stop_response("some-model", "session spend $1.40 reached the session cap $1.00")
     assert resp.choices and resp.choices[0].finish_reason == "stop"
     msg = resp.choices[0].message
-    assert msg.role == "assistant" and "BUDGET LEASH" in msg.content
+    assert msg.role == "assistant" and "Budget limit reached" in msg.content
     assert resp.usage.total_tokens == 0
     resp2 = budget_stop_response("m", "some reason", api_mode="anthropic_messages")
     content = getattr(resp2, "content", None)
     if isinstance(content, list):
-        assert "BUDGET LEASH" in content[0].text
+        assert "Budget limit reached" in content[0].text
     else:
-        assert "BUDGET LEASH" in resp2.choices[0].message.content
+        assert "Budget limit reached" in resp2.choices[0].message.content
     print("ok: budget stop reply is provider-shaped with zero usage")
+
+
+def test_block_texts_are_neutral_and_pathless():
+    from leash import budget_stop_text
+
+    with tempfile.TemporaryDirectory() as tmp:
+        leash = fresh(tmp)
+        leash.on_post_api_request("s1", "some-model", {"input_tokens": 2_000_000})
+        decision = leash.on_pre_tool_call("s1", "terminal")
+        texts = [decision["message"], budget_stop_text("session spend reached the cap")]
+    for text in texts:
+        for banned in ("hermes", "nous", "~/", ".json", "/"):
+            assert banned not in text.lower(), (banned, text)
+        assert "workspace owner" in text
+    print("ok: block and stop texts name no host and no path")
+
+
+def test_builtin_price_table():
+    from leash import PRICES_AS_OF, builtin_price
+
+    assert PRICES_AS_OF == "2026-11-24"
+    opus = builtin_price("claude-opus-5-5")
+    assert opus == {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0}, opus
+    for spelling in ("anthropic/claude-opus-5.5", "Claude-Opus-5-5-20260401", "opus"):
+        assert builtin_price(spelling) == opus, spelling
+    assert builtin_price("sonnet")["input"] == 2.0
+    assert builtin_price("openai/gpt-6.1-sol") == {
+        "input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 2.0}
+    assert builtin_price("gpt-5-mini")["output"] == 2.0
+    assert builtin_price("some-model") is None
+    with tempfile.TemporaryDirectory() as tmp:
+        leash = fresh(tmp)
+        # 100k in + 10k out on Opus 5.5 = 0.40 + 0.20 = $0.60 (default price would be $0.13)
+        leash.on_post_api_request("s1", "claude-opus-5-5", {"input_tokens": 100_000, "output_tokens": 10_000})
+        assert abs(leash.session_report("s1")["spent_usd"] - 0.60) < 1e-9
+        # an explicit prices entry still wins over the built-in table
+        leash.config["prices"] = {"claude-opus-5-5": {"input": 1.0, "output": 1.0}}
+        leash.on_post_api_request("s2", "claude-opus-5-5", {"input_tokens": 1_000_000})
+        assert abs(leash.session_report("s2")["spent_usd"] - 1.0) < 1e-9
+    print("ok: built-in list prices apply unless budget-leash.json overrides them")
 
 
 class _FakeCtx:
@@ -287,7 +327,7 @@ def test_middleware_wiring():
             out = mw(request={"messages": []}, next_call=next_call,
                      session_id="mw1", model="m", api_mode=None)
             assert len(calls) == 1, "provider must not be invoked once the cap is hit"
-            assert "BUDGET LEASH" in out.choices[0].message.content
+            assert "Budget limit reached" in out.choices[0].message.content
             assert plugin._LEASH.session_report("mw1")["blocked_api_calls"] == 1
         finally:
             os.environ.pop("HERMES_HOME", None)
@@ -308,4 +348,6 @@ if __name__ == "__main__":
     test_llm_execution_cutoff()
     test_budget_stop_response_shape()
     test_middleware_wiring()
+    test_block_texts_are_neutral_and_pathless()
+    test_builtin_price_table()
     print("ALL TESTS PASSED")
